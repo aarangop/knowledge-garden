@@ -1,0 +1,40 @@
+vaults:
+  - name: Experimental
+    path: /Users/andresarango/Vaults/Experimental
+  - name: Zettelkasten
+    path: /Users/andresarango/Vaults/Zettelkasten
+  - name: Zettelkasten 2.0
+    path: /Users/andresarango/Vaults/Zettelkasten 2.0  
+
+neo4j:
+  uri: bolt://localhost:7687
+  user: neo4j
+  password: knowledge-garden
+  database: neo4j
+
+# together_ai.api_key is loaded from TOGETHER_API_KEY env var
+together_ai:
+  base_url: https://api.together.xyz/v1
+
+embedding:
+  provider: together
+  model: intfloat/multilingual-e5-large-instruct
+  dimension: 1024
+  batch_size: 32
+
+llm:
+  provider: together
+  model: THUDM/glm-4-9b-chat
+  max_tokens: 1024
+  temperature: 0.3
+
+chunking:
+  max_chunk_size: 1000
+  min_chunk_size: 100
+
+linking:
+  threshold: 0.7
+  max_neighbors: 20
+
+export:
+  output_dir: ./output
