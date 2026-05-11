@@ -266,3 +266,186 @@ class TestParseFile:
         parser = MarkdownParser()
         note = parser.parse_file(md_file, tmp_path, "test_vault")
         assert note.attachment_refs == ["image.png", "report.pdf"]
+
+
+# ---------------------------------------------------------------------------
+# Spec 13 — Frontmatter preservation
+# ---------------------------------------------------------------------------
+
+
+import logging  # noqa: E402
+
+
+class TestFrontmatter:
+    """Spec 13 §2 / §6.1 — frontmatter parsing in MarkdownParser.parse_file."""
+
+    @staticmethod
+    def _write(tmp_path, content: str, name: str = "n.md", binary: bool = False):
+        p = tmp_path / name
+        if binary:
+            p.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
+        else:
+            # Write bytes to control exact line endings (tmp_path.write_text would
+            # honor universal newlines on some platforms).
+            p.write_bytes(content.encode("utf-8"))
+        return p
+
+    @pytest.mark.unit
+    def test_no_frontmatter(self, tmp_path):
+        """Spec 13 §2.3: file with no `---` block → frontmatter={}, content unchanged, no warning."""
+        md = self._write(tmp_path, "# Hello\nWorld")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == "# Hello\nWorld"
+
+    @pytest.mark.unit
+    def test_simple_frontmatter(self, tmp_path):
+        """Spec 13 §6.1: well-formed mapping → parsed dict; block stripped from content."""
+        md = self._write(tmp_path, "---\ntitle: Foo\ntags: [a, b]\n---\n# Body\n")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"title": "Foo", "tags": ["a", "b"]}
+        assert note.content == "# Body\n"
+
+    @pytest.mark.unit
+    def test_frontmatter_no_trailing_newline(self, tmp_path):
+        """Spec 13 §2.3: frontmatter without trailing newline → parsed; body becomes ''."""
+        md = self._write(tmp_path, "---\nkey: value\n---")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"key": "value"}
+        assert note.content == ""
+
+    @pytest.mark.unit
+    def test_frontmatter_crlf(self, tmp_path):
+        """Spec 13 §2.3: CRLF line endings handled identically to LF."""
+        md = self._write(tmp_path, "---\r\nkey: value\r\n---\r\nbody")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"key": "value"}
+        assert note.content == "body"
+
+    @pytest.mark.unit
+    def test_empty_frontmatter_block(self, tmp_path, caplog):
+        """Spec 13 §2.3 / §6.1: `---\\n---\\nbody` → clean strip; frontmatter={}, content="body";
+        NO warning logged."""
+        md = self._write(tmp_path, "---\n---\nbody")
+        parser = MarkdownParser()
+        with caplog.at_level(logging.WARNING, logger="knowledge_garden.services.parser"):
+            note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == "body"
+        parser_warnings = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and r.name == "knowledge_garden.services.parser"
+        ]
+        assert parser_warnings == [], f"Unexpected warnings: {parser_warnings}"
+
+    @pytest.mark.unit
+    def test_whitespace_only_frontmatter_block(self, tmp_path, caplog):
+        """Spec 13 §2.3 / §6.1: `---\\n\\n---\\nbody` → clean strip; no warning."""
+        md = self._write(tmp_path, "---\n\n---\nbody")
+        parser = MarkdownParser()
+        with caplog.at_level(logging.WARNING, logger="knowledge_garden.services.parser"):
+            note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == "body"
+        parser_warnings = [
+            r for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and r.name == "knowledge_garden.services.parser"
+        ]
+        assert parser_warnings == [], f"Unexpected warnings: {parser_warnings}"
+
+    @pytest.mark.unit
+    def test_malformed_yaml(self, tmp_path, caplog):
+        """Spec 13 §6.1: malformed YAML → frontmatter={}, raw content preserved, WARNING logged."""
+        raw = "---\nkey: : :\n---\nbody"
+        md = self._write(tmp_path, raw)
+        parser = MarkdownParser()
+        with caplog.at_level(logging.WARNING, logger="knowledge_garden.services.parser"):
+            note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == raw
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "knowledge_garden.services.parser"
+        ]
+        assert warnings, "Expected a WARNING from the parser logger"
+
+    @pytest.mark.unit
+    def test_top_level_yaml_list(self, tmp_path, caplog):
+        """Spec 13 §6.1: top-level YAML list → frontmatter={}, raw preserved, WARNING logged."""
+        raw = "---\n- a\n- b\n---\nbody"
+        md = self._write(tmp_path, raw)
+        parser = MarkdownParser()
+        with caplog.at_level(logging.WARNING, logger="knowledge_garden.services.parser"):
+            note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == raw
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "knowledge_garden.services.parser"
+        ]
+        assert warnings, "Expected a WARNING from the parser logger"
+
+    @pytest.mark.unit
+    def test_top_level_yaml_scalar(self, tmp_path, caplog):
+        """Spec 13 §6.1: top-level YAML scalar → frontmatter={}, raw preserved, WARNING logged."""
+        raw = "---\n42\n---\nbody"
+        md = self._write(tmp_path, raw)
+        parser = MarkdownParser()
+        with caplog.at_level(logging.WARNING, logger="knowledge_garden.services.parser"):
+            note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == raw
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and r.name == "knowledge_garden.services.parser"
+        ]
+        assert warnings, "Expected a WARNING from the parser logger"
+
+    @pytest.mark.unit
+    def test_frontmatter_nested_dict(self, tmp_path):
+        """Spec 13 §2.3: nested dict in frontmatter is preserved."""
+        md = self._write(tmp_path, "---\nmeta:\n  k: v\n---\nbody")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"meta": {"k": "v"}}
+        assert note.content == "body"
+
+    @pytest.mark.unit
+    def test_frontmatter_multiline_string(self, tmp_path):
+        """Spec 13 §2.3: YAML literal block (`|`) preserves newlines."""
+        md = self._write(tmp_path, "---\nnote: |\n  a\n  b\n---\nbody")
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"note": "a\nb\n"}
+        assert note.content == "body"
+
+    @pytest.mark.unit
+    def test_dashes_not_at_start(self, tmp_path):
+        """Spec 13 §2.3: `---` not at start of file → not treated as frontmatter."""
+        raw = "hello\n---\nkey: v\n---\n"
+        md = self._write(tmp_path, raw)
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {}
+        assert note.content == raw
+
+    @pytest.mark.unit
+    def test_wikilink_in_frontmatter_value_extracted(self, tmp_path):
+        """Spec 13 §2.3 / §6.1: wikilinks inside frontmatter populate outgoing_links;
+        block is still stripped from content."""
+        raw = '---\nup: "[[Project]]"\nrelated: "[[Foo]]"\n---\n[[Bar]]\n'
+        md = self._write(tmp_path, raw)
+        parser = MarkdownParser()
+        note = parser.parse_file(md, tmp_path, "v")
+        assert note.frontmatter == {"up": "[[Project]]", "related": "[[Foo]]"}
+        assert note.content == "[[Bar]]\n"
+        assert set(note.outgoing_links) >= {"Project", "Foo", "Bar"}

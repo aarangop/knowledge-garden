@@ -13,15 +13,15 @@ class TestHealthEndpoint:
     @pytest.mark.unit
     def test_health_endpoint(self):
         """Contract: GET /api/v1/health returns HTTP 200 when services are mocked."""
-        # Ensure a fresh import each time so patching takes effect
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_config = MagicMock()
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = None
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
@@ -40,12 +40,13 @@ class TestHealthEndpoint:
         """Contract: GET /api/v1/health response body contains keys status, neo4j, together_ai."""
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_config = MagicMock()
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = None
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
@@ -67,12 +68,13 @@ class TestHealthEndpoint:
         """Contract: After app startup, app.state.graph_store and app.state.embedder are set."""
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_config = MagicMock()
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = None
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
@@ -87,22 +89,21 @@ class TestHealthEndpoint:
 
 
 class TestLifespanProviderDispatch:
-    """Contract section 3.6 — lifespan selects embedder based on config.embedding.provider."""
+    """Contract section 3.6 — lifespan selects embedder based on AppSettings.hugging_face."""
 
     @pytest.mark.unit
     def test_lifespan_selects_together_embedder(self):
-        """Contract: provider='together' → TogetherAIEmbedder is instantiated, no ValueError raised.
-        """
+        """Contract: hugging_face is None → TogetherAIEmbedder is instantiated."""
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
              patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
-            mock_config = MagicMock()
-            mock_config.embedding.provider = "together"
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = None
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
@@ -119,24 +120,20 @@ class TestLifespanProviderDispatch:
 
     @pytest.mark.unit
     def test_lifespan_selects_hf_embedder(self):
-        """Contract: provider='huggingface' with valid hugging_face config → HuggingFaceEmbedder
-        is instantiated.
-        """
+        """Contract: hugging_face is not None → HuggingFaceEmbedder is instantiated."""
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
              patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
             mock_hf_config = MagicMock()
             mock_hf_config.api_key = "test-token"
-            mock_hf_config.base_url = "https://api-inference.huggingface.co"
 
-            mock_config = MagicMock()
-            mock_config.embedding.provider = "huggingface"
-            mock_config.hugging_face = mock_hf_config
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = mock_hf_config
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
@@ -152,26 +149,26 @@ class TestLifespanProviderDispatch:
             assert not mock_together_cls.called
 
     @pytest.mark.unit
-    def test_lifespan_unknown_provider_raises(self):
-        """Contract: provider='unknown' → ValueError raised at startup containing
-        'Unknown embedding provider'.
-        """
+    def test_lifespan_together_not_used_when_hf_present(self):
+        """Contract: hugging_face present → TogetherAIEmbedder is never instantiated."""
         sys.modules.pop("knowledge_garden.main", None)
 
-        with patch("knowledge_garden.main.Config") as mock_config_cls, \
+        with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
-             patch("knowledge_garden.main.TogetherAIEmbedder"), \
-             patch("knowledge_garden.main.HuggingFaceEmbedder"):
+             patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
+             patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
-            mock_config = MagicMock()
-            mock_config.embedding.provider = "unknown"
-            mock_config_cls.from_yaml.return_value = mock_config
+            mock_settings = MagicMock()
+            mock_settings.hugging_face = MagicMock()
+            mock_settings_cls.return_value = mock_settings
 
             mock_store = AsyncMock()
             mock_store_cls.return_value = mock_store
 
+            mock_hf_cls.return_value = AsyncMock()
+
             from knowledge_garden.main import app
-            with pytest.raises(Exception) as exc_info, TestClient(app):
+            with TestClient(app):
                 pass
 
-        assert "Unknown embedding provider" in str(exc_info.value)
+            assert not mock_together_cls.called

@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
-from knowledge_garden.config import Config, EmbeddingConfig, TogetherAIConfig, VaultConfig
+from knowledge_garden.config import AppSettings, BusinessConfig, EmbeddingConfig, VaultConfig
 from knowledge_garden.models.note import Note
+
+# Import the service-layer SearchResult dataclass (does not exist yet in red phase).
+try:
+    from knowledge_garden.services.graph_store import SearchResult as ServiceSearchResult
+    _SEARCH_RESULT_AVAILABLE = True
+except ImportError:
+    ServiceSearchResult = None  # type: ignore[assignment, misc]
+    _SEARCH_RESULT_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Local fixtures
@@ -24,9 +32,14 @@ def cli_runner() -> CliRunner:
     return CliRunner()
 
 
+def _mock_settings() -> MagicMock:
+    """Return a MagicMock standing in for AppSettings in CLI tests."""
+    return MagicMock(spec=AppSettings)
+
+
 @pytest.fixture
 def sample_config(tmp_path):
-    """Write a minimal valid config.yaml and return (Config, Path).
+    """Write a minimal valid business config.yaml and return (BusinessConfig, Path).
 
     Contract: section 4.6 — sample_config fixture.
     """
@@ -35,10 +48,8 @@ def sample_config(tmp_path):
         "vaults:\n"
         "  - name: my_vault\n"
         "    path: /tmp/my_vault\n"
-        "together_ai:\n"
-        "  api_key: fake-key\n"
     )
-    return Config.from_yaml(config_path), config_path
+    return BusinessConfig.from_yaml(config_path), config_path
 
 
 def _make_note(title: str = "Note A", vault: str = "my_vault") -> Note:
@@ -70,7 +81,8 @@ class TestIngestCommand:
 
         config_obj, config_path = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_ingest", new_callable=AsyncMock) as mock_run,
@@ -78,7 +90,7 @@ class TestIngestCommand:
             from knowledge_garden.services.pipeline import IngestResult
 
             mock_run.return_value = IngestResult(
-                notes_parsed=1, chunks_created=2, duration_seconds=0.1
+                notes_parsed=1, chunks_created=2, chunks_skipped=0, duration_seconds=0.1
             )
             result = cli_runner.invoke(app, ["ingest", "my_vault"])
         assert result.exit_code == 0
@@ -92,7 +104,8 @@ class TestIngestCommand:
 
         config_obj, config_path = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_ingest", new_callable=AsyncMock) as mock_run,
@@ -100,7 +113,7 @@ class TestIngestCommand:
             from knowledge_garden.services.pipeline import IngestResult
 
             mock_run.return_value = IngestResult(
-                notes_parsed=0, chunks_created=0, duration_seconds=0.0
+                notes_parsed=0, chunks_created=0, chunks_skipped=0, duration_seconds=0.0
             )
             cli_runner.invoke(app, ["ingest", "my_vault"])
         mock_run.assert_called_once()
@@ -116,7 +129,10 @@ class TestIngestCommand:
         from knowledge_garden.cli import app
 
         config_obj, _ = sample_config
-        with patch("knowledge_garden.cli._load_config", return_value=config_obj):
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+        ):
             result = cli_runner.invoke(app, ["ingest", "missing_vault"])
         assert result.exit_code != 0
 
@@ -125,11 +141,11 @@ class TestIngestCommand:
         """Contract: ingest with unknown vault prints 'not found' message and exits 1."""
         from knowledge_garden.cli import app
 
-        config_obj = Config(
-            vaults=[VaultConfig(name="other", path="/x")],
-            together_ai=TogetherAIConfig(api_key="fake"),
-        )
-        with patch("knowledge_garden.cli._load_config", return_value=config_obj):
+        config_obj = BusinessConfig(vaults=[VaultConfig(name="other", path="/x")])
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+        ):
             result = cli_runner.invoke(app, ["ingest", "missing_vault"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
@@ -139,9 +155,10 @@ class TestIngestCommand:
         """Contract: ingest pointing to a nonexistent config file exits 1 and reports error."""
         from knowledge_garden.cli import app
 
-        result = cli_runner.invoke(
-            app, ["ingest", "vault", "--config", "/nonexistent/config.yaml"]
-        )
+        with patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()):
+            result = cli_runner.invoke(
+                app, ["ingest", "vault", "--config", "/nonexistent/config.yaml"]
+            )
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
@@ -152,7 +169,8 @@ class TestIngestCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_ingest", new_callable=AsyncMock) as mock_run,
@@ -160,7 +178,7 @@ class TestIngestCommand:
             from knowledge_garden.services.pipeline import IngestResult
 
             mock_run.return_value = IngestResult(
-                notes_parsed=3, chunks_created=12, duration_seconds=1.5
+                notes_parsed=3, chunks_created=12, chunks_skipped=0, duration_seconds=1.5
             )
             result = cli_runner.invoke(app, ["ingest", "my_vault"])
         assert result.exit_code == 0
@@ -174,7 +192,8 @@ class TestIngestCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_ingest", new_callable=AsyncMock) as mock_run,
@@ -182,7 +201,7 @@ class TestIngestCommand:
             from knowledge_garden.services.pipeline import IngestResult
 
             mock_run.return_value = IngestResult(
-                notes_parsed=3, chunks_created=12, duration_seconds=1.5
+                notes_parsed=3, chunks_created=12, chunks_skipped=0, duration_seconds=1.5
             )
             result = cli_runner.invoke(app, ["ingest", "my_vault"])
         assert "3" in result.output
@@ -195,12 +214,14 @@ class TestIngestCommand:
         """Contract: ingest with unknown embedding provider exits 1 and reports error."""
         from knowledge_garden.cli import app
 
-        config_obj = Config(
+        config_obj = BusinessConfig(
             vaults=[VaultConfig(name="my_vault", path="/tmp/my_vault")],
-            together_ai=TogetherAIConfig(api_key="fake"),
             embedding=EmbeddingConfig(provider="unknown"),
         )
-        with patch("knowledge_garden.cli._load_config", return_value=config_obj):
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+        ):
             result = cli_runner.invoke(app, ["ingest", "my_vault"])
         assert result.exit_code == 1
         assert "Unknown embedding provider" in result.output
@@ -218,7 +239,8 @@ class TestIngestCommand:
             raise typer.Exit(1)
 
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_ingest", side_effect=_raise),
@@ -242,7 +264,8 @@ class TestNotesCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -259,7 +282,8 @@ class TestNotesCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -279,7 +303,8 @@ class TestNotesCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -296,7 +321,8 @@ class TestNotesCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -313,7 +339,8 @@ class TestNotesCommand:
         config_obj, _ = sample_config
         notes = [_make_note("Alpha"), _make_note("Beta")]
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -335,7 +362,8 @@ class TestNotesCommand:
         # Simulate server-side filter: helper is called with vault_filter="vaultA",
         # returns only vaultA notes (the CLI renders whatever _run_notes returns).
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -361,7 +389,8 @@ class TestNotesCommand:
             original_path="SomeNote.md",
         )
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -385,7 +414,8 @@ class TestNotesCommand:
             outgoing_links=["A", "B", "C"],
         )
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_notes", new_callable=AsyncMock) as mock_run,
         ):
@@ -409,7 +439,8 @@ class TestStatusCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -426,7 +457,8 @@ class TestStatusCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -441,7 +473,8 @@ class TestStatusCommand:
 
         config_obj, _ = sample_config
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -461,7 +494,8 @@ class TestStatusCommand:
             + [_make_note("n3", vault="vault2")]
         )
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -487,7 +521,8 @@ class TestStatusCommand:
             _make_note("nb", vault="beta"),
         ]
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -509,7 +544,8 @@ class TestStatusCommand:
             + [_make_note(f"m{i}", vault="vault2") for i in range(2)]
         )
         with (
-            patch("knowledge_garden.cli._load_config", return_value=config_obj),
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
             patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
             patch("knowledge_garden.cli._run_status", new_callable=AsyncMock) as mock_run,
         ):
@@ -524,6 +560,143 @@ class TestStatusCommand:
 # ---------------------------------------------------------------------------
 
 
+class TestLinkCommand:
+    """Contract section — kg link command."""
+
+    @pytest.mark.unit
+    def test_link_command_exits_zero(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: link happy path exits with code 0."""
+        from knowledge_garden.cli import app
+        from knowledge_garden.services.linker import LinkResult
+
+        config_obj, _ = sample_config
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_link", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = LinkResult(
+                chunks_processed=10,
+                similarity_edges_created=5,
+                note_relationships_derived=3,
+                duration_seconds=0.5,
+            )
+            result = cli_runner.invoke(app, ["link"])
+        assert result.exit_code == 0
+
+    @pytest.mark.unit
+    def test_link_command_prints_summary_table(
+        self, cli_runner: CliRunner, sample_config
+    ) -> None:
+        """Contract: link command prints result table with chunks, edges, relationships."""
+        from knowledge_garden.cli import app
+        from knowledge_garden.services.linker import LinkResult
+
+        config_obj, _ = sample_config
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_link", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = LinkResult(
+                chunks_processed=10,
+                similarity_edges_created=5,
+                note_relationships_derived=3,
+                duration_seconds=1.2,
+            )
+            result = cli_runner.invoke(app, ["link"])
+        assert "10" in result.output
+        assert "5" in result.output
+        assert "3" in result.output
+        assert "1.2" in result.output
+
+    @pytest.mark.unit
+    def test_link_missing_config_file(self, cli_runner: CliRunner) -> None:
+        """Contract: link with nonexistent config exits 1 and reports error."""
+        from knowledge_garden.cli import app
+
+        with patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()):
+            result = cli_runner.invoke(
+                app, ["link", "--config", "/nonexistent/config.yaml"]
+            )
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+
+class TestExportCommand:
+    """Contract section 5 — kg export command."""
+
+    @pytest.mark.unit
+    def test_export_command_exits_zero(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: export happy path exits with code 0."""
+        from knowledge_garden.cli import app
+        from knowledge_garden.services.exporter import ExportResult
+
+        config_obj, config_path = sample_config
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_export", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = ExportResult(
+                notes_exported=2, files_written=2, duration_seconds=0.5
+            )
+            result = cli_runner.invoke(app, ["export", "--config", str(config_path)])
+        assert result.exit_code == 0
+
+    @pytest.mark.unit
+    def test_export_command_prints_table(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: export prints a summary table containing 'Notes exported' and the count."""
+        from knowledge_garden.cli import app
+        from knowledge_garden.services.exporter import ExportResult
+
+        config_obj, config_path = sample_config
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_export", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = ExportResult(
+                notes_exported=4, files_written=4, duration_seconds=1.1
+            )
+            result = cli_runner.invoke(app, ["export", "--config", str(config_path)])
+        assert "Notes exported" in result.output
+        assert "4" in result.output
+
+    @pytest.mark.unit
+    def test_export_command_config_not_found(self, cli_runner: CliRunner) -> None:
+        """Contract: export with nonexistent config file exits with code 1."""
+        from knowledge_garden.cli import app
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch(
+                "knowledge_garden.cli._load_business_config",
+                side_effect=FileNotFoundError("not found"),
+            ),
+        ):
+            result = cli_runner.invoke(
+                app, ["export", "--config", "/nonexistent/config.yaml"]
+            )
+        assert result.exit_code == 1
+
+    @pytest.mark.unit
+    def test_export_command_settings_error(self, cli_runner: CliRunner) -> None:
+        """Contract: export with bad AppSettings exits with code 1."""
+        from knowledge_garden.cli import app
+
+        with patch(
+            "knowledge_garden.cli._load_app_settings",
+            side_effect=Exception("settings error"),
+        ):
+            result = cli_runner.invoke(app, ["export"])
+        assert result.exit_code == 1
+
+
 class TestHelpCommand:
     """Contract section 4.1 — top-level app help."""
 
@@ -534,3 +707,221 @@ class TestHelpCommand:
 
         result = cli_runner.invoke(app, ["--help"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# TestSearchCommand — spec 10, section 9
+# ---------------------------------------------------------------------------
+
+
+def _make_service_search_result_cli(
+    note_id: str = "aabb0000-0000-0000-0000-000000000001",
+    title: str = "Search Result Note",
+    source_vault: str = "vault_a",
+    original_path: str = "search_result.md",
+    score: float = 0.92,
+    snippet: str = "a short snippet from the matching chunk",
+    heading_context: str = "## Results Section",
+):
+    """Build a service-layer SearchResult for CLI tests."""
+    if not _SEARCH_RESULT_AVAILABLE:
+        return MagicMock(
+            note_id=note_id,
+            title=title,
+            source_vault=source_vault,
+            original_path=original_path,
+            score=score,
+            snippet=snippet,
+            heading_context=heading_context,
+        )
+    return ServiceSearchResult(  # type: ignore[call-arg]
+        note_id=note_id,
+        title=title,
+        source_vault=source_vault,
+        original_path=original_path,
+        score=score,
+        snippet=snippet,
+        heading_context=heading_context,
+    )
+
+
+class TestSearchCommand:
+    """Contract section 9 — kg search command (spec 10)."""
+
+    @pytest.mark.unit
+    def test_search_command_exits_zero(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: search happy path exits with code 0."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+        search_result = _make_service_search_result_cli()
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_search", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = [search_result]
+            result = cli_runner.invoke(
+                app, ["search", "hello", "--config", str(config_path)]
+            )
+
+        assert result.exit_code == 0
+
+    @pytest.mark.unit
+    def test_search_command_prints_table(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: search output contains note title and formatted score."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+        search_result = _make_service_search_result_cli(
+            title="My Important Note",
+            score=0.9234,
+        )
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_search", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = [search_result]
+            result = cli_runner.invoke(
+                app, ["search", "hello", "--config", str(config_path)]
+            )
+
+        assert result.exit_code == 0
+        assert "My Important Note" in result.output
+        assert "0.9234" in result.output
+
+    @pytest.mark.unit
+    def test_search_command_no_results(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: search with no results prints 'No results found.' and exits 0."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_search", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = []
+            result = cli_runner.invoke(
+                app, ["search", "hello", "--config", str(config_path)]
+            )
+
+        assert result.exit_code == 0
+        assert "No results found" in result.output
+
+    @pytest.mark.unit
+    def test_search_command_vault_flag(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: --vault flag is forwarded to _run_search as vault='myvault'."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_search", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = []
+            cli_runner.invoke(
+                app,
+                ["search", "hello", "--vault", "myvault", "--config", str(config_path)],
+            )
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args.kwargs
+        # vault may be passed positionally or as keyword
+        call_args = mock_run.call_args
+        all_args = list(call_args.args) + list(call_args.kwargs.values())
+        assert "myvault" in all_args or call_kwargs.get("vault") == "myvault"
+
+    @pytest.mark.unit
+    def test_search_command_limit_flag_overrides_config(
+        self, cli_runner: CliRunner, sample_config
+    ) -> None:
+        """Contract: --limit 5 → _run_search called with limit=5."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch("knowledge_garden.cli._make_embedder", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._make_graph_store", return_value=AsyncMock()),
+            patch("knowledge_garden.cli._run_search", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = []
+            cli_runner.invoke(
+                app,
+                ["search", "hello", "--limit", "5", "--config", str(config_path)],
+            )
+
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        # limit=5 must appear somewhere in the call
+        all_values = list(call_args.args) + list(call_args.kwargs.values())
+        assert 5 in all_values or call_args.kwargs.get("limit") == 5
+
+    @pytest.mark.unit
+    def test_search_command_config_not_found(self, cli_runner: CliRunner) -> None:
+        """Contract: _load_business_config raises FileNotFoundError → exit code 1."""
+        from knowledge_garden.cli import app
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch(
+                "knowledge_garden.cli._load_business_config",
+                side_effect=FileNotFoundError("not found"),
+            ),
+        ):
+            result = cli_runner.invoke(
+                app, ["search", "hello", "--config", "/nonexistent/config.yaml"]
+            )
+
+        assert result.exit_code == 1
+
+    @pytest.mark.unit
+    def test_search_command_settings_error(self, cli_runner: CliRunner) -> None:
+        """Contract: _load_app_settings raises Exception → exit code 1."""
+        from knowledge_garden.cli import app
+
+        with patch(
+            "knowledge_garden.cli._load_app_settings",
+            side_effect=Exception("bad settings"),
+        ):
+            result = cli_runner.invoke(app, ["search", "hello"])
+
+        assert result.exit_code == 1
+
+    @pytest.mark.unit
+    def test_search_command_embedder_error(self, cli_runner: CliRunner, sample_config) -> None:
+        """Contract: _make_embedder raises ValueError → exit code 1."""
+        from knowledge_garden.cli import app
+
+        config_obj, config_path = sample_config
+
+        with (
+            patch("knowledge_garden.cli._load_app_settings", return_value=_mock_settings()),
+            patch("knowledge_garden.cli._load_business_config", return_value=config_obj),
+            patch(
+                "knowledge_garden.cli._make_embedder",
+                side_effect=ValueError("unknown provider"),
+            ),
+        ):
+            result = cli_runner.invoke(
+                app, ["search", "hello", "--config", str(config_path)]
+            )
+
+        assert result.exit_code == 1

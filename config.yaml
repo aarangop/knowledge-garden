@@ -5,6 +5,10 @@ vaults:
     path: /Users/andresarango/Vaults/Zettelkasten
   - name: Zettelkasten 2.0
     path: /Users/andresarango/Vaults/Zettelkasten 2.0  
+  - name: Zettelkasten 3.0
+    path: /Users/andresarango/Documents/Zettelkasten 3.0  
+  - name: Writing
+    path: /Users/andresarango/Vaults/Writing
 
 neo4j:
   uri: bolt://localhost:7687
@@ -17,10 +21,10 @@ together_ai:
   base_url: https://api.together.xyz/v1
 
 embedding:
-  provider: together
+  provider: huggingface
   model: intfloat/multilingual-e5-large-instruct
   dimension: 1024
-  batch_size: 32
+  batch_size: 16
 
 llm:
   provider: together
@@ -29,12 +33,18 @@ llm:
   temperature: 0.3
 
 chunking:
-  max_chunk_size: 1000
-  min_chunk_size: 100
+  max_chunk_size: 512
+  min_chunk_size: 20
 
 linking:
-  threshold: 0.7
-  max_neighbors: 20
+  threshold: 0.9
+  max_neighbors: 10
+
+dedup:
+  threshold: 0.95
 
 export:
   output_dir: ./output
+
+search:
+  search_limit: 10

@@ -1,6 +1,7 @@
 """FastAPI application entry point for Knowledge Garden.
 
 Contract reference: specifications/01_foundation/contract.md, section 7.
+Updated by: specifications/04_config_split/contract.md, section 4.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from knowledge_garden.api.routes import router
-from knowledge_garden.config import Config
+from knowledge_garden.config import AppSettings, EmbeddingConfig
 from knowledge_garden.services.embedder import EmbeddingService
 from knowledge_garden.services.hf_embedder import HuggingFaceEmbedder
 from knowledge_garden.services.neo4j_store import Neo4jGraphStore
@@ -22,30 +23,30 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    """Startup: load config, instantiate services, initialize graph store.
+    """Startup: load settings, instantiate services, initialize graph store.
     Shutdown: close connections.
     """
-    config = Config.from_yaml("config.yaml")
+    settings = AppSettings()  # type: ignore[call-arg]
 
-    graph_store = Neo4jGraphStore(config.neo4j, config.embedding)
+    # Use default EmbeddingConfig for the server; provider selection is
+    # determined by whether hf_api_token is present (no YAML business config
+    # is loaded by the FastAPI server — see spec 04_config_split section 4).
+    embedding_config = EmbeddingConfig()
+
+    graph_store = Neo4jGraphStore(settings.neo4j, embedding_config)
     await graph_store.initialize()
 
-    provider = config.embedding.provider
     embedder: EmbeddingService
-    if provider == "huggingface":
-        if config.hugging_face is None:
-            raise ValueError(
-                "hugging_face config section is required when provider is 'huggingface'"
-            )
-        embedder = HuggingFaceEmbedder(config.hugging_face, config.embedding)
-    elif provider == "together" or not isinstance(provider, str):
-        embedder = TogetherAIEmbedder(config.together_ai, config.embedding)
+    hf = settings.hugging_face
+    if hf is not None:
+        embedder = HuggingFaceEmbedder(hf, embedding_config)
     else:
-        raise ValueError(f"Unknown embedding provider: {provider!r}")
+        embedder = TogetherAIEmbedder(settings.together_ai, embedding_config)
 
-    app.state.config = config
+    app.state.settings = settings
     app.state.graph_store = graph_store
     app.state.embedder = embedder
+    app.state.export_output_dir = "./output"
 
     logger.info("Knowledge Garden started")
 

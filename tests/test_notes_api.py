@@ -8,19 +8,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from knowledge_garden.api.routes import router as api_router
-from knowledge_garden.config import Config, TogetherAIConfig, VaultConfig
 from knowledge_garden.models.note import Note
 
 
 @pytest.fixture
-def test_app(mock_embedder, mock_graph_store, tmp_path):
+def test_app(mock_embedder, mock_graph_store):
     """Minimal FastAPI app with the API router and mocked services on app.state."""
     app = FastAPI()
     app.include_router(api_router, prefix="/api/v1")
-    app.state.config = Config(
-        vaults=[VaultConfig(name="test_vault", path=str(tmp_path))],
-        together_ai=TogetherAIConfig(api_key="fake"),
-    )
     app.state.embedder = mock_embedder
     app.state.graph_store = mock_graph_store
     return app
@@ -127,3 +122,96 @@ class TestNotesListEndpoint:
 
         assert response.status_code == 200
         assert response.json()["notes"][0]["outgoing_links"] == ["A", "B"]
+
+
+class TestExportEndpoint:
+    """Contract section 6 — POST /api/v1/export endpoint."""
+
+    @pytest.mark.unit
+    async def test_export_endpoint_returns_200(self, test_app, mock_graph_store, tmp_path):
+        """Contract: POST /api/v1/export with empty body returns HTTP 200."""
+        mock_graph_store.get_all_notes.return_value = []
+        mock_graph_store.get_note_relationships_with_scores.return_value = {}
+
+        # Point the export output to a temporary directory so no real path is needed
+        test_app.state.export_output_dir = str(tmp_path)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/export", json={})
+
+        assert response.status_code == 200
+
+    @pytest.mark.unit
+    async def test_export_endpoint_response_schema(
+        self, test_app, mock_graph_store, tmp_path
+    ):
+        """Contract: response JSON contains notes_exported, files_written, output_dir."""
+        mock_graph_store.get_all_notes.return_value = []
+        mock_graph_store.get_note_relationships_with_scores.return_value = {}
+        test_app.state.export_output_dir = str(tmp_path)
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/export", json={})
+
+        body = response.json()
+        for key in ("notes_exported", "files_written", "output_dir"):
+            assert key in body, f"Missing key '{key}' in export response"
+
+    @pytest.mark.unit
+    async def test_export_endpoint_custom_output_dir(
+        self, test_app, mock_graph_store, tmp_path
+    ):
+        """Contract: body output_dir is reflected back in the response output_dir field."""
+        custom_dir = str(tmp_path / "custom_output")
+        mock_graph_store.get_all_notes.return_value = []
+        mock_graph_store.get_note_relationships_with_scores.return_value = {}
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/export", json={"output_dir": custom_dir})
+
+        body = response.json()
+        assert body["output_dir"] == custom_dir
+
+
+class TestLinkEndpoint:
+    """Contract: POST /api/v1/link triggers linking and returns stats."""
+
+    @pytest.mark.unit
+    async def test_link_endpoint_returns_200(self, test_app, mock_graph_store) -> None:
+        """Contract: POST /api/v1/link returns HTTP 200."""
+        mock_graph_store.get_all_chunks.return_value = []
+        mock_graph_store.derive_related_to.return_value = 0
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/link")
+
+        assert response.status_code == 200
+
+    @pytest.mark.unit
+    async def test_link_endpoint_response_schema(self, test_app, mock_graph_store) -> None:
+        """Contract: response contains chunks_processed, similarity_edges_created,
+        note_relationships_derived, duration_seconds."""
+        mock_graph_store.get_all_chunks.return_value = []
+        mock_graph_store.derive_related_to.return_value = 0
+
+        async with AsyncClient(
+            transport=ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/v1/link")
+
+        body = response.json()
+        for key in (
+            "chunks_processed",
+            "similarity_edges_created",
+            "note_relationships_derived",
+            "duration_seconds",
+        ):
+            assert key in body, f"Missing key '{key}' in link response"

@@ -50,7 +50,7 @@ class TestGraphStore:
     def test_graph_store_requires_all_methods(self):
         """Contract: Subclass missing any one abstract method raises TypeError on instantiation.
 
-        GraphStore has 10 abstract methods. This subclass implements all except
+        GraphStore has 12 abstract methods. This subclass implements all except
         get_chunks_for_note, which is sufficient to trigger TypeError.
         """
 
@@ -84,6 +84,12 @@ class TestGraphStore:
             async def get_all_notes(self) -> list:
                 return []
 
+            async def get_all_chunks(self) -> list:
+                return []
+
+            async def derive_related_to(self, threshold: float = 0.7) -> int:
+                return 0
+
             # get_chunks_for_note intentionally omitted
 
         with pytest.raises(TypeError):
@@ -91,7 +97,7 @@ class TestGraphStore:
 
     @pytest.mark.unit
     def test_graph_store_complete_subclass(self):
-        """Contract: Subclass implementing ALL 10 abstract methods instantiates successfully."""
+        """Contract: Subclass implementing ALL abstract methods instantiates successfully."""
 
         class ConcreteGraphStore(GraphStore):
             async def initialize(self) -> None:
@@ -124,6 +130,37 @@ class TestGraphStore:
                 return []
 
             async def get_chunks_for_note(self, note_id) -> list:
+                return []
+
+            async def get_all_chunks(self) -> list:
+                return []
+
+            async def derive_related_to(self, threshold: float = 0.7) -> int:
+                return 0
+
+            async def clear_semantic_edges(self) -> dict:
+                return {"similarity_edges_deleted": 0, "related_to_edges_deleted": 0}
+
+            async def get_note_relationships_with_scores(self, note_id) -> dict:
+                return {}
+
+            async def get_note_by_id(self, note_id) -> None:
+                return None
+
+            async def get_note_by_title(self, title: str) -> None:
+                return None
+
+            async def get_stats(self) -> dict:
+                return {
+                    "note_count": 0,
+                    "chunk_count": 0,
+                    "similarity_edge_count": 0,
+                    "related_to_edge_count": 0,
+                    "links_to_edge_count": 0,
+                    "vault_names": [],
+                }
+
+            async def search_notes(self, query_embedding, limit=10, vault_filter=None) -> list:
                 return []
 
         store = ConcreteGraphStore()

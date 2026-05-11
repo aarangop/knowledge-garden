@@ -3,11 +3,22 @@
 Parses Obsidian-flavoured markdown vaults into Note objects.
 """
 
+import logging
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from knowledge_garden.config import VaultConfig
 from knowledge_garden.models.note import Note
+
+logger = logging.getLogger(__name__)
+
+FRONTMATTER_RE = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)^---[ \t]*(\r?\n|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 
 # Matches both transclusion (![[...]]) and standard ([[...]]) wikilinks.
 # Group 1: "!" if transclusion prefix present, else empty string.
@@ -108,15 +119,44 @@ class MarkdownParser:
             outgoing_links  = note wikilink targets (fragments and aliases stripped)
             attachment_refs = attachment wikilink targets (non-.md extensions)
         """
-        content = file_path.read_text(encoding="utf-8")
-        note_links, attachment_refs = self.extract_wikilinks(content)
+        raw = file_path.read_text(encoding="utf-8")
+        note_links, attachment_refs = self.extract_wikilinks(raw)
+
+        frontmatter: dict[str, Any] = {}
+        body = raw
+        match = FRONTMATTER_RE.match(raw)
+        if match is not None:
+            yaml_body = match.group(1)
+            try:
+                parsed = yaml.safe_load(yaml_body)
+            except yaml.YAMLError as exc:
+                logger.warning(
+                    "Malformed YAML frontmatter; ignoring",
+                    extra={"path": str(file_path), "error": str(exc)},
+                )
+            else:
+                if parsed is None:
+                    body = raw[match.end():]
+                elif isinstance(parsed, dict):
+                    frontmatter = parsed
+                    body = raw[match.end():]
+                else:
+                    logger.warning(
+                        "YAML frontmatter is not a mapping; ignoring",
+                        extra={
+                            "path": str(file_path),
+                            "type": type(parsed).__name__,
+                        },
+                    )
+
         return Note(
             title=file_path.stem,
-            content=content,
+            content=body,
             vault=vault_name,
             original_path=str(file_path.relative_to(vault_root)),
             outgoing_links=note_links,
             attachment_refs=attachment_refs,
+            frontmatter=frontmatter,
         )
 
     def parse_vault(self, vault_config: VaultConfig) -> list[Note]:

@@ -18,6 +18,26 @@ services:
       retries: 10
       start_period: 30s
 
+  neo4j-test:
+    image: neo4j:5.11
+    container_name: knowledge-garden-neo4j-test
+    profiles: ["test"]
+    ports:
+      - "7688:7687"
+      - "7475:7474"
+    environment:
+      NEO4J_AUTH: neo4j/knowledge-garden-test
+      NEO4J_PLUGINS: '["apoc","graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+    volumes:
+      - neo4j_test_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -O- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   api:
     build: .
     container_name: knowledge-garden-api
@@ -34,3 +54,4 @@ services:
 
 volumes:
   neo4j_data:
+  neo4j_test_data:

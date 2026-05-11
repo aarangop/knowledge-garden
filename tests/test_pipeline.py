@@ -1,4 +1,4 @@
-"""Tests for IngestPipeline service — contract: specifications/03_cli/contract.md, section 2."""
+"""Tests for IngestPipeline — contract: specifications/07_pipeline_dedup/contract.md."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, call
@@ -9,14 +9,10 @@ from knowledge_garden.config import ChunkingConfig, VaultConfig
 from knowledge_garden.models.note import Chunk, Note
 from knowledge_garden.services.chunker import NoteChunker
 from knowledge_garden.services.parser import MarkdownParser
-from knowledge_garden.services.pipeline import IngestPipeline
+from knowledge_garden.services.pipeline import IngestPhase, IngestPipeline
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def make_note(title: str = "Note A") -> Note:
-    """Return a Note with real content sufficient to survive min_chunk_size filtering."""
     return Note(
         title=title,
         content="## Section\n\n" + "word " * 50,
@@ -26,35 +22,26 @@ def make_note(title: str = "Note A") -> Note:
 
 
 def make_chunk(note: Note, index: int = 0) -> Chunk:
-    """Return a Chunk belonging to the given Note."""
     return Chunk(note_id=note.id, content="Chunk content.", index=index)
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture
 def default_chunking_config() -> ChunkingConfig:
-    """ChunkingConfig with generous limits so real content produces chunks."""
     return ChunkingConfig(max_chunk_size=1000, min_chunk_size=10)
 
 
 @pytest.fixture
 def mock_parser() -> MagicMock:
-    """MarkdownParser whose parse_vault is controlled per test."""
     return MagicMock(spec=MarkdownParser)
 
 
 @pytest.fixture
 def mock_chunker() -> MagicMock:
-    """NoteChunker whose chunk_note is controlled per test."""
     return MagicMock(spec=NoteChunker)
 
 
 @pytest.fixture
 def sample_vault_config() -> VaultConfig:
-    """A VaultConfig with a fixed name and path (does not need to exist on disk)."""
     return VaultConfig(name="test_vault", path="/tmp/test_vault")
 
 
@@ -65,7 +52,6 @@ def pipeline(
     mock_embedder: AsyncMock,
     mock_graph_store: AsyncMock,
 ) -> IngestPipeline:
-    """IngestPipeline with all dependencies mocked (mock_chunker version)."""
     return IngestPipeline(
         parser=mock_parser,
         chunker=mock_chunker,
@@ -74,13 +60,38 @@ def pipeline(
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+class TestIngestResult:
+    """Contract: IngestResult has chunks_skipped field."""
+
+    @pytest.mark.unit
+    def test_ingest_result_has_chunks_skipped(self) -> None:
+        from knowledge_garden.services.pipeline import IngestResult
+
+        result = IngestResult(
+            notes_parsed=1,
+            chunks_created=2,
+            chunks_skipped=3,
+            duration_seconds=0.5,
+        )
+        assert result.chunks_skipped == 3
+
+
+class TestIngestPhase:
+    """Contract: IngestPhase has CHUNKING, DEDUP, UPSERT."""
+
+    @pytest.mark.unit
+    def test_ingest_phase_values(self) -> None:
+        assert IngestPhase.CHUNKING == "chunking"
+        assert IngestPhase.DEDUP == "dedup"
+        assert IngestPhase.UPSERT == "upsert"
+
+    @pytest.mark.unit
+    def test_ingest_phase_no_embedding_or_indexing(self) -> None:
+        assert not hasattr(IngestPhase, "EMBEDDING")
+        assert not hasattr(IngestPhase, "INDEXING")
+
 
 class TestIngestPipelineResult:
-    """Contract section 2.3 — result shape and basic return value."""
-
     @pytest.mark.unit
     async def test_pipeline_result_is_ingest_result(
         self,
@@ -88,9 +99,9 @@ class TestIngestPipelineResult:
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: run() returns an instance of IngestResult."""
         from knowledge_garden.services.pipeline import IngestResult
 
         note = make_note("Alpha")
@@ -98,10 +109,12 @@ class TestIngestPipelineResult:
         mock_parser.parse_vault.return_value = [note]
         mock_chunker.chunk_note.return_value = [chunk]
         mock_embedder.embed.return_value = [[0.1] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 
         assert isinstance(result, IngestResult)
+        assert result.chunks_skipped == 0
 
     @pytest.mark.unit
     async def test_pipeline_result_duration_non_negative(
@@ -110,14 +123,15 @@ class TestIngestPipelineResult:
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: result.duration_seconds >= 0 for any run."""
         note = make_note("Alpha")
         chunk = make_chunk(note)
         mock_parser.parse_vault.return_value = [note]
         mock_chunker.chunk_note.return_value = [chunk]
         mock_embedder.embed.return_value = [[0.1] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 
@@ -125,8 +139,6 @@ class TestIngestPipelineResult:
 
 
 class TestIngestPipelineEmptyVault:
-    """Contract section 2.3 — empty vault behaviour."""
-
     @pytest.mark.unit
     async def test_pipeline_empty_vault(
         self,
@@ -136,22 +148,18 @@ class TestIngestPipelineEmptyVault:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: parse_vault returns [] → notes_parsed==0, chunks_created==0,
-        embed not called, upsert_note not called.
-        """
         mock_parser.parse_vault.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 
         assert result.notes_parsed == 0
         assert result.chunks_created == 0
+        assert result.chunks_skipped == 0
         mock_embedder.embed.assert_not_called()
         mock_graph_store.upsert_note.assert_not_called()
 
 
 class TestIngestPipelineSingleNote:
-    """Contract section 2.3 — single-note scenarios."""
-
     @pytest.mark.unit
     async def test_pipeline_single_note_no_chunks(
         self,
@@ -162,9 +170,6 @@ class TestIngestPipelineSingleNote:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 1 note, chunk_note returns [] → notes_parsed==1, chunks_created==0,
-        embed not called, upsert_note called once, upsert_chunk not called.
-        """
         note = make_note("Alpha")
         mock_parser.parse_vault.return_value = [note]
         mock_chunker.chunk_note.return_value = []
@@ -187,30 +192,23 @@ class TestIngestPipelineSingleNote:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 1 note, chunk_note returns 2 chunks, embed returns 2 vectors →
-        notes_parsed==1, chunks_created==2, embed called once, upsert_chunk called twice.
-        """
         note = make_note("Alpha")
         chunk_a = make_chunk(note, index=0)
         chunk_b = make_chunk(note, index=1)
         mock_parser.parse_vault.return_value = [note]
         mock_chunker.chunk_note.return_value = [chunk_a, chunk_b]
         mock_embedder.embed.return_value = [[0.1] * 768, [0.2] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 
         assert result.notes_parsed == 1
         assert result.chunks_created == 2
-        mock_embedder.embed.assert_called_once()
-        embed_texts = mock_embedder.embed.call_args[0][0]
-        assert len(embed_texts) == 2
         mock_graph_store.upsert_note.assert_called_once()
         assert mock_graph_store.upsert_chunk.call_count == 2
 
 
 class TestIngestPipelineMultipleNotes:
-    """Contract section 2.3 — multiple-note scenarios."""
-
     @pytest.mark.unit
     async def test_pipeline_multiple_notes(
         self,
@@ -221,14 +219,12 @@ class TestIngestPipelineMultipleNotes:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 3 notes, each producing 1 chunk → notes_parsed==3, chunks_created==3,
-        upsert_note called 3 times, upsert_chunk called 3 times.
-        """
         notes = [make_note(f"Note{i}") for i in range(3)]
         chunks = [make_chunk(note, index=0) for note in notes]
         mock_parser.parse_vault.return_value = notes
         mock_chunker.chunk_note.side_effect = [[c] for c in chunks]
-        mock_embedder.embed.return_value = [[0.1] * 768] * 3
+        mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768] * len(texts)
+        mock_graph_store.find_similar_chunks.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 
@@ -238,36 +234,32 @@ class TestIngestPipelineMultipleNotes:
         assert mock_graph_store.upsert_chunk.call_count == 3
 
     @pytest.mark.unit
-    async def test_pipeline_embed_called_once_for_all_chunks(
+    async def test_pipeline_embed_called_per_batch(
         self,
         pipeline,
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 2 notes each producing 3 chunks → embed called exactly once
-        with a list of 6 texts.
-        """
         notes = [make_note("A"), make_note("B")]
-        mock_parser.parse_vault.return_value = notes
 
         def side_effect(note: Note) -> list[Chunk]:
             return [make_chunk(note, index=i) for i in range(3)]
 
+        mock_parser.parse_vault.return_value = notes
         mock_chunker.chunk_note.side_effect = side_effect
-        mock_embedder.embed.return_value = [[0.1] * 768] * 6
+        mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768] * len(texts)
+        mock_graph_store.find_similar_chunks.return_value = []
 
         await pipeline.run(sample_vault_config)
 
-        mock_embedder.embed.assert_called_once()
-        embed_texts = mock_embedder.embed.call_args[0][0]
-        assert len(embed_texts) == 6
+        all_embed_texts = [c[0][0] for c in mock_embedder.embed.call_args_list]
+        assert sum(len(t) for t in all_embed_texts) == 6
 
 
 class TestIngestPipelineEmbeddings:
-    """Contract section 2.3 — embedding assignment."""
-
     @pytest.mark.unit
     async def test_pipeline_embeddings_assigned_to_chunks(
         self,
@@ -278,9 +270,6 @@ class TestIngestPipelineEmbeddings:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: embed returns [[0.1]*768, [0.2]*768] → chunks passed to upsert_chunk
-        have embedding set to those vectors respectively.
-        """
         note = make_note("Alpha")
         chunk_a = make_chunk(note, index=0)
         chunk_b = make_chunk(note, index=1)
@@ -289,6 +278,7 @@ class TestIngestPipelineEmbeddings:
         vec_a = [0.1] * 768
         vec_b = [0.2] * 768
         mock_embedder.embed.return_value = [vec_a, vec_b]
+        mock_graph_store.find_similar_chunks.return_value = []
 
         await pipeline.run(sample_vault_config)
 
@@ -301,8 +291,6 @@ class TestIngestPipelineEmbeddings:
 
 
 class TestIngestPipelineUpsertOrdering:
-    """Contract section 2.3 — upsert_note called before upsert_chunk."""
-
     @pytest.mark.unit
     async def test_pipeline_upsert_note_called_before_upsert_chunk(
         self,
@@ -312,9 +300,6 @@ class TestIngestPipelineUpsertOrdering:
         mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: for 1 note with 1 chunk, upsert_note is called before any upsert_chunk call."""
-        from knowledge_garden.services.pipeline import IngestPipeline
-
         call_order: list[str] = []
 
         async def record_upsert_note(note: Note) -> None:
@@ -325,6 +310,7 @@ class TestIngestPipelineUpsertOrdering:
 
         mock_graph_store.upsert_note.side_effect = record_upsert_note
         mock_graph_store.upsert_chunk.side_effect = record_upsert_chunk
+        mock_graph_store.find_similar_chunks.return_value = []
 
         note = make_note("Alpha")
         chunk = make_chunk(note, index=0)
@@ -345,10 +331,190 @@ class TestIngestPipelineUpsertOrdering:
         upsert_chunk_idx = call_order.index("upsert_chunk")
         assert upsert_note_idx < upsert_chunk_idx
 
+    @pytest.mark.unit
+    async def test_pipeline_upsert_note_called_once_per_note_across_batches(
+        self,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunks = [make_chunk(note, index=i) for i in range(4)]
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = chunks
+        mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768] * len(texts)
+        mock_graph_store.find_similar_chunks.return_value = []
+
+        pipeline = IngestPipeline(
+            parser=mock_parser,
+            chunker=mock_chunker,
+            embedder=mock_embedder,
+            graph_store=mock_graph_store,
+            embed_batch_size=2,
+        )
+
+        await pipeline.run(sample_vault_config)
+
+        assert mock_graph_store.upsert_note.call_count == 1
+        assert mock_graph_store.upsert_chunk.call_count == 4
+
+
+class TestIngestPipelineDedup:
+    """Contract: dedup skips chunks that match existing index."""
+
+    @pytest.mark.unit
+    async def test_pipeline_dedup_skips_identical_chunks(
+        self,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunk_a = make_chunk(note, index=0)
+        chunk_b = make_chunk(note, index=1)
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = [chunk_a, chunk_b]
+        mock_embedder.embed.return_value = [[0.1] * 768, [0.2] * 768]
+
+        existing_chunk = make_chunk(note, index=99)
+        mock_graph_store.find_similar_chunks.side_effect = [
+            [(existing_chunk, 0.99)],
+            [],
+        ]
+
+        pipeline = IngestPipeline(
+            parser=mock_parser,
+            chunker=mock_chunker,
+            embedder=mock_embedder,
+            graph_store=mock_graph_store,
+        )
+
+        result = await pipeline.run(sample_vault_config)
+
+        assert result.chunks_skipped == 1
+        assert result.chunks_created == 1
+        assert mock_graph_store.upsert_chunk.call_count == 1
+
+    @pytest.mark.unit
+    async def test_pipeline_dedup_keeps_novel_chunks(
+        self,
+        pipeline,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunk_a = make_chunk(note, index=0)
+        chunk_b = make_chunk(note, index=1)
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = [chunk_a, chunk_b]
+        mock_embedder.embed.return_value = [[0.1] * 768, [0.2] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
+
+        result = await pipeline.run(sample_vault_config)
+
+        assert result.chunks_skipped == 0
+        assert result.chunks_created == 2
+
+    @pytest.mark.unit
+    async def test_pipeline_dedup_threshold_from_constructor(
+        self,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunk = make_chunk(note)
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = [chunk]
+        mock_embedder.embed.return_value = [[0.1] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
+
+        pipeline = IngestPipeline(
+            parser=mock_parser,
+            chunker=mock_chunker,
+            embedder=mock_embedder,
+            graph_store=mock_graph_store,
+            dedup_threshold=0.9,
+        )
+
+        await pipeline.run(sample_vault_config)
+
+        mock_graph_store.find_similar_chunks.assert_called_once()
+        call_kwargs = mock_graph_store.find_similar_chunks.call_args
+        assert call_kwargs.kwargs.get("threshold") == 0.9
+
+    @pytest.mark.unit
+    async def test_pipeline_dedup_fail_open_on_exception(
+        self,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunk = make_chunk(note)
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = [chunk]
+        mock_embedder.embed.return_value = [[0.1] * 768]
+        mock_graph_store.find_similar_chunks.side_effect = RuntimeError("index unavailable")
+
+        pipeline = IngestPipeline(
+            parser=mock_parser,
+            chunker=mock_chunker,
+            embedder=mock_embedder,
+            graph_store=mock_graph_store,
+        )
+
+        result = await pipeline.run(sample_vault_config)
+
+        assert result.chunks_skipped == 0
+        assert result.chunks_created == 1
+        mock_graph_store.upsert_chunk.assert_called_once()
+
+    @pytest.mark.unit
+    async def test_pipeline_all_chunks_duplicate_note_still_upserted(
+        self,
+        mock_parser: MagicMock,
+        mock_chunker: MagicMock,
+        mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
+        sample_vault_config: VaultConfig,
+    ) -> None:
+        note = make_note("Alpha")
+        chunk = make_chunk(note)
+        mock_parser.parse_vault.return_value = [note]
+        mock_chunker.chunk_note.return_value = [chunk]
+        mock_embedder.embed.return_value = [[0.1] * 768]
+
+        existing_chunk = make_chunk(note, index=99)
+        mock_graph_store.find_similar_chunks.return_value = [(existing_chunk, 0.99)]
+
+        pipeline = IngestPipeline(
+            parser=mock_parser,
+            chunker=mock_chunker,
+            embedder=mock_embedder,
+            graph_store=mock_graph_store,
+        )
+
+        result = await pipeline.run(sample_vault_config)
+
+        assert result.chunks_skipped == 1
+        assert result.chunks_created == 0
+        mock_graph_store.upsert_note.assert_called_once()
+        mock_graph_store.upsert_chunk.assert_not_called()
+
 
 class TestIngestPipelineProgressCallback:
-    """Contract section 2.3 — progress callback behaviour."""
-
     @pytest.mark.unit
     async def test_pipeline_progress_callback_not_called_for_empty_vault(
         self,
@@ -356,7 +522,6 @@ class TestIngestPipelineProgressCallback:
         mock_parser: MagicMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: empty vault → progress_callback is never called."""
         mock_parser.parse_vault.return_value = []
         callback = MagicMock()
 
@@ -365,48 +530,54 @@ class TestIngestPipelineProgressCallback:
         callback.assert_not_called()
 
     @pytest.mark.unit
-    async def test_pipeline_progress_callback_called_once_per_note(
+    async def test_pipeline_progress_callback_reports_all_phases(
         self,
         pipeline,
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 3 notes → progress_callback called exactly 3 times."""
         notes = [make_note(f"Note{i}") for i in range(3)]
         mock_parser.parse_vault.return_value = notes
         mock_chunker.chunk_note.side_effect = [[make_chunk(n)] for n in notes]
-        mock_embedder.embed.return_value = [[0.1] * 768] * 3
+        mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768] * len(texts)
+        mock_graph_store.find_similar_chunks.return_value = []
         callback = MagicMock()
 
         await pipeline.run(sample_vault_config, progress_callback=callback)
 
-        assert callback.call_count == 3
+        chunking_calls = [c for c in callback.call_args_list if c[0][0] == IngestPhase.CHUNKING]
+        dedup_calls = [c for c in callback.call_args_list if c[0][0] == IngestPhase.DEDUP]
+        upsert_calls = [c for c in callback.call_args_list if c[0][0] == IngestPhase.UPSERT]
+        assert len(chunking_calls) == 3
+        assert len(dedup_calls) >= 1
+        assert len(upsert_calls) >= 1
 
     @pytest.mark.unit
-    async def test_pipeline_progress_callback_receives_correct_args(
+    async def test_pipeline_progress_callback_receives_correct_chunking_args(
         self,
         pipeline,
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: 2 notes titled 'A' and 'B' → callback first call args (1, 2, 'A');
-        second call args (2, 2, 'B').
-        """
         note_a = make_note("A")
         note_b = make_note("B")
         mock_parser.parse_vault.return_value = [note_a, note_b]
         mock_chunker.chunk_note.side_effect = [[make_chunk(note_a)], [make_chunk(note_b)]]
-        mock_embedder.embed.return_value = [[0.1] * 768] * 2
+        mock_embedder.embed.side_effect = lambda texts: [[0.1] * 768] * len(texts)
+        mock_graph_store.find_similar_chunks.return_value = []
         callback = MagicMock()
 
         await pipeline.run(sample_vault_config, progress_callback=callback)
 
-        assert callback.call_args_list[0] == call(1, 2, "A")
-        assert callback.call_args_list[1] == call(2, 2, "B")
+        chunking_calls = [c for c in callback.call_args_list if c[0][0] == IngestPhase.CHUNKING]
+        assert chunking_calls[0] == call(IngestPhase.CHUNKING, 1, 2, "A")
+        assert chunking_calls[1] == call(IngestPhase.CHUNKING, 2, 2, "B")
 
     @pytest.mark.unit
     async def test_pipeline_progress_callback_is_optional(
@@ -415,9 +586,9 @@ class TestIngestPipelineProgressCallback:
         mock_parser: MagicMock,
         mock_chunker: MagicMock,
         mock_embedder: AsyncMock,
+        mock_graph_store: AsyncMock,
         sample_vault_config: VaultConfig,
     ) -> None:
-        """Contract: run() called without progress_callback → no exception, returns IngestResult."""
         from knowledge_garden.services.pipeline import IngestResult
 
         note = make_note("Alpha")
@@ -425,6 +596,7 @@ class TestIngestPipelineProgressCallback:
         mock_parser.parse_vault.return_value = [note]
         mock_chunker.chunk_note.return_value = [chunk]
         mock_embedder.embed.return_value = [[0.1] * 768]
+        mock_graph_store.find_similar_chunks.return_value = []
 
         result = await pipeline.run(sample_vault_config)
 

@@ -30,6 +30,10 @@ uv run pytest tests/ -v -m unit                   # run unit tests
 uv run pytest tests/ -v -m integration            # run integration tests
 uv run ruff check src/ tests/                     # lint
 uv run mypy src/                                  # type check
+
+# Integration tests use an isolated Neo4j on port 7688 (separate volume +
+# password). Start it once with:
+docker compose --profile test up -d neo4j-test
 ```
 
 ## Project Structure

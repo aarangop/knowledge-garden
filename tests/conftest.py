@@ -2,6 +2,7 @@
 
 Contract reference: specifications/01_foundation/contract.md, section 8.
 """
+import os
 from unittest.mock import AsyncMock
 
 import pytest
@@ -50,23 +51,33 @@ def mock_together_response(num_embeddings: int = 1, dimension: int = 768) -> dic
 
 @pytest.fixture
 async def neo4j_store():
-    """Real Neo4jGraphStore connected to a local Neo4j instance for integration tests.
+    """Real Neo4jGraphStore connected to the **test** Neo4j instance.
 
-    Contract: section 8 — neo4j_store fixture.
+    Connection is read from environment variables, defaulting to the
+    isolated test container declared in docker-compose.yml under the
+    "test" profile (port 7688). This keeps the dev Neo4j instance on
+    7687 untouched by the destructive teardown below.
 
-    Setup: creates and initializes the store against bolt://localhost:7687.
+    Env overrides:
+        KG_TEST_NEO4J_URI       (default: bolt://localhost:7688)
+        KG_TEST_NEO4J_USER      (default: neo4j)
+        KG_TEST_NEO4J_PASSWORD  (default: knowledge-garden-test)
+        KG_TEST_NEO4J_DATABASE  (default: neo4j)
+
+    Setup: creates and initializes the store.
     Teardown: deletes all nodes and relationships, then closes the driver.
 
-    Requires a running Neo4j 5.11+ instance with credentials neo4j/knowledge-garden.
+    Start the test instance with:
+        docker compose --profile test up -d neo4j-test
     """
     from knowledge_garden.config import EmbeddingConfig, Neo4jConfig
     from knowledge_garden.services.neo4j_store import Neo4jGraphStore
 
     neo4j_config = Neo4jConfig(
-        uri="bolt://localhost:7687",
-        user="neo4j",
-        password="knowledge-garden",
-        database="neo4j",
+        uri=os.environ.get("KG_TEST_NEO4J_URI", "bolt://localhost:7688"),
+        user=os.environ.get("KG_TEST_NEO4J_USER", "neo4j"),
+        password=os.environ.get("KG_TEST_NEO4J_PASSWORD", "knowledge-garden-test"),
+        database=os.environ.get("KG_TEST_NEO4J_DATABASE", "neo4j"),
     )
     embedding_config = EmbeddingConfig()
 

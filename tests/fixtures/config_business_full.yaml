@@ -1,0 +1,31 @@
+vaults:
+  - name: personal
+    path: /home/user/vaults/personal
+  - name: work
+    path: /home/user/vaults/work
+
+embedding:
+  provider: together
+  model: togethercomputer/m2-bert-80M-8k-retrieval
+  dimension: 768
+  batch_size: 64
+
+llm:
+  provider: together
+  model: THUDM/glm-4-9b-chat
+  max_tokens: 1024
+  temperature: 0.3
+
+chunking:
+  max_chunk_size: 1000
+  min_chunk_size: 100
+
+linking:
+  threshold: 0.7
+  max_neighbors: 20
+
+dedup:
+  threshold: 0.95
+
+export:
+  output_dir: ./output

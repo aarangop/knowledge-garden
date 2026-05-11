@@ -2,19 +2,29 @@
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
+import together
 
 from knowledge_garden.config import EmbeddingConfig, TogetherAIConfig
-from knowledge_garden.services.together_embedder import TogetherAIEmbedder  # does NOT exist yet
-from tests.conftest import mock_together_response
+from knowledge_garden.services.together_embedder import TogetherAIEmbedder
 
 
 def make_embedder(batch_size: int = 64, dimension: int = 768) -> TogetherAIEmbedder:
-    """Helper to construct a TogetherAIEmbedder with test configuration."""
     together_config = TogetherAIConfig(api_key="test-key")
     embedding_config = EmbeddingConfig(batch_size=batch_size, dimension=dimension)
     return TogetherAIEmbedder(together_config, embedding_config)
+
+
+def make_sdk_response(num_embeddings: int, dimension: int) -> MagicMock:
+    """Build a mock Together SDK embeddings response."""
+    items = []
+    for _ in range(num_embeddings):
+        item = MagicMock()
+        item.embedding = [0.1] * dimension
+        items.append(item)
+    resp = MagicMock()
+    resp.data = items
+    return resp
 
 
 class TestTogetherAIEmbedder:
@@ -24,12 +34,10 @@ class TestTogetherAIEmbedder:
     async def test_embed_single_text(self):
         """Contract: embed(["hello"]) returns exactly 1 vector of the configured dimension."""
         embedder = make_embedder(dimension=768)
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = mock_together_response(num_embeddings=1, dimension=768)
-
-        with patch.object(embedder._client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
+        with patch.object(
+            embedder._client.embeddings, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = make_sdk_response(1, 768)
             result = await embedder.embed(["hello"])
 
         assert len(result) == 1
@@ -39,12 +47,10 @@ class TestTogetherAIEmbedder:
     async def test_embed_batch(self):
         """Contract: embed(["a", "b", "c"]) returns exactly 3 vectors."""
         embedder = make_embedder(dimension=768)
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = mock_together_response(num_embeddings=3, dimension=768)
-
-        with patch.object(embedder._client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
+        with patch.object(
+            embedder._client.embeddings, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = make_sdk_response(3, 768)
             result = await embedder.embed(["a", "b", "c"])
 
         assert len(result) == 3
@@ -53,50 +59,47 @@ class TestTogetherAIEmbedder:
 
     @pytest.mark.unit
     async def test_embed_batching_splits_large_input(self):
-        """Contract: 100 texts with batch_size=64 triggers exactly 2 HTTP POST calls."""
+        """Contract: 100 texts with batch_size=64 triggers exactly 2 SDK calls."""
         embedder = make_embedder(batch_size=64, dimension=768)
 
-        # First batch: 64 texts, second batch: 36 texts
-        def side_effect(*args, **kwargs):
-            payload = kwargs.get("json", {})
-            n = len(payload.get("input", []))
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            resp.json.return_value = mock_together_response(num_embeddings=n, dimension=768)
-            return resp
+        def side_effect(**kwargs):
+            n = len(kwargs.get("input", []))
+            return make_sdk_response(n, 768)
 
-        with patch.object(embedder._client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.side_effect = side_effect
+        with patch.object(
+            embedder._client.embeddings, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.side_effect = side_effect
             result = await embedder.embed(["text"] * 100)
 
-        assert mock_post.call_count == 2
+        assert mock_create.call_count == 2
         assert len(result) == 100
 
     @pytest.mark.unit
     async def test_embed_empty_list(self):
-        """Edge case: embed([]) returns an empty list without making any HTTP calls."""
+        """Edge case: embed([]) returns an empty list without making any SDK calls."""
         embedder = make_embedder()
-
-        with patch.object(embedder._client, "post", new_callable=AsyncMock) as mock_post:
+        with patch.object(
+            embedder._client.embeddings, "create", new_callable=AsyncMock
+        ) as mock_create:
             result = await embedder.embed([])
 
         assert result == []
-        mock_post.assert_not_called()
+        mock_create.assert_not_called()
 
     @pytest.mark.unit
     async def test_embed_api_error_propagates(self):
-        """Edge case: when httpx raises HTTPStatusError (500), it propagates to the caller."""
+        """Edge case: when the SDK raises APIError, it propagates to the caller."""
         embedder = make_embedder()
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "500 Internal Server Error",
-            request=MagicMock(),
-            response=MagicMock(),
-        )
-
-        with patch.object(embedder._client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
-            with pytest.raises(httpx.HTTPStatusError):
+        with patch.object(
+            embedder._client.embeddings, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.side_effect = together.APIError(
+                message="Internal Server Error",
+                request=MagicMock(),
+                body=None,
+            )
+            with pytest.raises(together.APIError):
                 await embedder.embed(["hello"])
 
     @pytest.mark.unit
@@ -107,10 +110,11 @@ class TestTogetherAIEmbedder:
 
     @pytest.mark.unit
     async def test_close_closes_client(self):
-        """Contract: after close(), the underlying httpx.AsyncClient is closed."""
+        """Contract: close() calls close() on the underlying SDK client."""
         embedder = make_embedder()
-        await embedder.close()
-        assert embedder._client.is_closed
+        with patch.object(embedder._client, "close", new_callable=AsyncMock) as mock_close:
+            await embedder.close()
+        mock_close.assert_called_once()
 
     @pytest.mark.integration
     async def test_embed_real_api(self):

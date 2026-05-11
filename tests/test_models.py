@@ -98,6 +98,50 @@ class TestNoteModel:
         note = Note(title="t", content="c", vault="v", original_path="p.md")
         assert note.attachment_refs == []
 
+    # ------------------------------------------------------------------
+    # Spec 13 — frontmatter field
+    # ------------------------------------------------------------------
+
+    @pytest.mark.unit
+    def test_note_frontmatter_default_empty_dict(self):
+        """Spec 13 §1: Note without frontmatter → frontmatter == {}."""
+        note = Note(title="t", content="c", vault="v", original_path="p.md")
+        assert note.frontmatter == {}
+        assert isinstance(note.frontmatter, dict)
+
+    @pytest.mark.unit
+    def test_note_frontmatter_accepts_populated_dict(self):
+        """Spec 13 §1: frontmatter accepts a populated dict[str, Any]."""
+        fm = {"tags": ["a", "b"], "title": "Custom", "meta": {"k": "v"}}
+        note = Note(
+            title="t",
+            content="c",
+            vault="v",
+            original_path="p.md",
+            frontmatter=fm,
+        )
+        assert note.frontmatter == fm
+
+    @pytest.mark.unit
+    def test_note_frontmatter_default_factory_not_shared(self):
+        """Spec 13 §1: default_factory=dict avoids the shared-mutable-default trap."""
+        n1 = Note(title="a", content="", vault="v", original_path="a.md")
+        n2 = Note(title="b", content="", vault="v", original_path="b.md")
+        n1.frontmatter["x"] = 1
+        assert "x" not in n2.frontmatter
+
+    @pytest.mark.unit
+    def test_note_frontmatter_rejects_non_dict(self):
+        """Spec 13 §1: frontmatter is typed dict[str, Any]; non-dict values are rejected."""
+        with pytest.raises(ValidationError):
+            Note(
+                title="t",
+                content="c",
+                vault="v",
+                original_path="p.md",
+                frontmatter=["not", "a", "dict"],  # type: ignore[arg-type]
+            )
+
 
 class TestChunkModel:
     """Contract section: 2.2 — Chunk model tests"""

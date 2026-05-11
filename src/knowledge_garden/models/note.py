@@ -1,3 +1,4 @@
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,7 @@ class Note(BaseModel):
     outgoing_links: list[str] = []  # raw wikilink targets (unresolved)
     attachment_refs: list[str] = []  # non-note wikilink targets (images, PDFs, etc.)
     resolved_links: list[UUID] = []  # resolved Note IDs after link resolution
+    frontmatter: dict[str, Any] = Field(default_factory=dict)  # parsed YAML frontmatter
 
 
 class Chunk(BaseModel):
