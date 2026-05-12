@@ -352,3 +352,74 @@ class TestGetGraphStatsTool:
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
         assert parsed == stats
+
+
+class TestLifespanLoadsYamlEmbeddingConfig:
+    """Lifespan must source EmbeddingConfig from config.yaml so query-time
+    embeddings match the model used during ingestion."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_kg_lifespan_uses_yaml_embedding_config(self, monkeypatch):
+        from knowledge_garden import mcp_server
+        from knowledge_garden.config import BusinessConfig, EmbeddingConfig
+
+        fake_embedding = EmbeddingConfig(
+            provider="huggingface",
+            model="intfloat/multilingual-e5-large-instruct",
+            dimension=1024,
+            batch_size=16,
+        )
+        fake_business = BusinessConfig(embedding=fake_embedding)
+
+        captured: dict[str, object] = {}
+
+        def fake_from_yaml(path):
+            captured["path"] = path
+            return fake_business
+
+        class FakeSettings:
+            neo4j = object()
+            together_ai = object()
+            hugging_face = object()
+
+        class FakeGraphStore:
+            def __init__(self, neo4j, embedding):
+                captured["graph_embedding"] = embedding
+
+            async def initialize(self):
+                return None
+
+            async def close(self):
+                return None
+
+        class FakeHF:
+            def __init__(self, hf_cfg, embedding):
+                captured["embedder_embedding"] = embedding
+                captured["embedder_kind"] = "hf"
+
+            async def close(self):
+                return None
+
+        class FakeTogether:
+            def __init__(self, t_cfg, embedding):
+                captured["embedder_kind"] = "together"
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(mcp_server, "AppSettings", lambda: FakeSettings())
+        monkeypatch.setattr(mcp_server.BusinessConfig, "from_yaml", staticmethod(fake_from_yaml))
+        monkeypatch.setattr(mcp_server, "Neo4jGraphStore", FakeGraphStore)
+        monkeypatch.setattr(mcp_server, "HuggingFaceEmbedder", FakeHF)
+        monkeypatch.setattr(mcp_server, "TogetherAIEmbedder", FakeTogether)
+
+        async with mcp_server.kg_lifespan(server=MagicMock()) as state:
+            pass
+
+        assert captured["path"] == "config.yaml"
+        assert captured["graph_embedding"] is fake_embedding
+        assert captured["embedder_embedding"] is fake_embedding
+        assert captured["embedder_kind"] == "hf"
+        assert state.graph_store is not None
+        assert state.embedder is not None

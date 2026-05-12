@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from knowledge_garden.config import AppSettings, EmbeddingConfig
+from knowledge_garden.config import AppSettings, BusinessConfig
 from knowledge_garden.services.embedder import EmbeddingService
 from knowledge_garden.services.graph_store import GraphStore
 from knowledge_garden.services.hf_embedder import HuggingFaceEmbedder
@@ -36,19 +36,32 @@ class AppState:
 
 @asynccontextmanager
 async def kg_lifespan(server: FastMCP) -> AsyncIterator[AppState]:
-    """Initialise Neo4j and embedder on startup; close on shutdown."""
+    """Initialise Neo4j and embedder on startup; close on shutdown.
+
+    Loads `config.yaml` so the server embeds queries with the same model used
+    during ingestion. Without this, dim/model mismatches silently break
+    semantic search.
+    """
     settings = AppSettings()
-    embedding_config = EmbeddingConfig()
+    business = BusinessConfig.from_yaml("config.yaml")
+    embedding_config = business.embedding
 
     graph_store = Neo4jGraphStore(settings.neo4j, embedding_config)
     await graph_store.initialize()
 
     embedder: EmbeddingService
-    hf = settings.hugging_face
-    if hf is not None:
+    provider = embedding_config.provider
+    if provider == "huggingface":
+        hf = settings.hugging_face
+        if hf is None:
+            raise ValueError(
+                "HF_API_TOKEN is required when embedding.provider is 'huggingface'"
+            )
         embedder = HuggingFaceEmbedder(hf, embedding_config)
-    else:
+    elif provider == "together":
         embedder = TogetherAIEmbedder(settings.together_ai, embedding_config)
+    else:
+        raise ValueError(f"Unknown embedding provider: {provider!r}")
 
     try:
         yield AppState(graph_store=graph_store, embedder=embedder)

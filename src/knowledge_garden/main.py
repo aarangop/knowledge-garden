@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from knowledge_garden.api.routes import router
-from knowledge_garden.config import AppSettings, EmbeddingConfig
+from knowledge_garden.config import AppSettings, BusinessConfig
 from knowledge_garden.services.embedder import EmbeddingService
 from knowledge_garden.services.hf_embedder import HuggingFaceEmbedder
 from knowledge_garden.services.neo4j_store import Neo4jGraphStore
@@ -28,20 +28,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """
     settings = AppSettings()  # type: ignore[call-arg]
 
-    # Use default EmbeddingConfig for the server; provider selection is
-    # determined by whether hf_api_token is present (no YAML business config
-    # is loaded by the FastAPI server — see spec 04_config_split section 4).
-    embedding_config = EmbeddingConfig()
+    # Load config.yaml so the server embeds queries with the same model used
+    # during ingestion (CLI-side). Otherwise dim/model mismatches silently
+    # break semantic search.
+    business = BusinessConfig.from_yaml("config.yaml")
+    embedding_config = business.embedding
 
     graph_store = Neo4jGraphStore(settings.neo4j, embedding_config)
     await graph_store.initialize()
 
     embedder: EmbeddingService
-    hf = settings.hugging_face
-    if hf is not None:
+    provider = embedding_config.provider
+    if provider == "huggingface":
+        hf = settings.hugging_face
+        if hf is None:
+            raise ValueError(
+                "HF_API_TOKEN is required when embedding.provider is 'huggingface'"
+            )
         embedder = HuggingFaceEmbedder(hf, embedding_config)
-    else:
+    elif provider == "together":
         embedder = TogetherAIEmbedder(settings.together_ai, embedding_config)
+    else:
+        raise ValueError(f"Unknown embedding provider: {provider!r}")
 
     app.state.settings = settings
     app.state.graph_store = graph_store

@@ -1,10 +1,22 @@
 """Tests for FastAPI application — contract: specifications/01_foundation/contract.md, section 7
-and specifications/02_ingestion/contract.md, section 3.6."""
+and specifications/02_ingestion/contract.md, section 3.6.
+
+Updated by specifications/15_server_yaml_embedding/NOTES.md: lifespan dispatch
+is driven by `business.embedding.provider` (loaded from config.yaml), not by
+the presence of `settings.hugging_face`. Tests below patch
+`BusinessConfig.from_yaml` to control dispatch.
+"""
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+from knowledge_garden.config import BusinessConfig, EmbeddingConfig
+
+
+def _make_business(provider: str) -> BusinessConfig:
+    return BusinessConfig(embedding=EmbeddingConfig(provider=provider))
 
 
 class TestHealthEndpoint:
@@ -16,18 +28,14 @@ class TestHealthEndpoint:
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_settings = MagicMock()
-            mock_settings.hugging_face = None
-            mock_settings_cls.return_value = mock_settings
-
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
-            mock_emb = AsyncMock()
-            mock_embedder_cls.return_value = mock_emb
+            mock_settings_cls.return_value = MagicMock()
+            mock_business_cls.from_yaml.return_value = _make_business("together")
+            mock_store_cls.return_value = AsyncMock()
+            mock_embedder_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app
             with TestClient(app) as client:
@@ -41,18 +49,14 @@ class TestHealthEndpoint:
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_settings = MagicMock()
-            mock_settings.hugging_face = None
-            mock_settings_cls.return_value = mock_settings
-
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
-            mock_emb = AsyncMock()
-            mock_embedder_cls.return_value = mock_emb
+            mock_settings_cls.return_value = MagicMock()
+            mock_business_cls.from_yaml.return_value = _make_business("together")
+            mock_store_cls.return_value = AsyncMock()
+            mock_embedder_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app
             with TestClient(app) as client:
@@ -69,18 +73,14 @@ class TestHealthEndpoint:
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_embedder_cls:
 
-            mock_settings = MagicMock()
-            mock_settings.hugging_face = None
-            mock_settings_cls.return_value = mock_settings
-
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
-            mock_emb = AsyncMock()
-            mock_embedder_cls.return_value = mock_emb
+            mock_settings_cls.return_value = MagicMock()
+            mock_business_cls.from_yaml.return_value = _make_business("together")
+            mock_store_cls.return_value = AsyncMock()
+            mock_embedder_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app
             with TestClient(app):
@@ -89,27 +89,24 @@ class TestHealthEndpoint:
 
 
 class TestLifespanProviderDispatch:
-    """Contract section 3.6 — lifespan selects embedder based on AppSettings.hugging_face."""
+    """Spec 15: lifespan selects embedder based on `business.embedding.provider`
+    (loaded from config.yaml), not on `AppSettings.hugging_face`."""
 
     @pytest.mark.unit
     def test_lifespan_selects_together_embedder(self):
-        """Contract: hugging_face is None → TogetherAIEmbedder is instantiated."""
+        """provider='together' → TogetherAIEmbedder is instantiated, HF is not."""
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
              patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
-            mock_settings = MagicMock()
-            mock_settings.hugging_face = None
-            mock_settings_cls.return_value = mock_settings
-
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
-            mock_emb = AsyncMock()
-            mock_together_cls.return_value = mock_emb
+            mock_settings_cls.return_value = MagicMock()
+            mock_business_cls.from_yaml.return_value = _make_business("together")
+            mock_store_cls.return_value = AsyncMock()
+            mock_together_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app
             with TestClient(app):
@@ -120,26 +117,22 @@ class TestLifespanProviderDispatch:
 
     @pytest.mark.unit
     def test_lifespan_selects_hf_embedder(self):
-        """Contract: hugging_face is not None → HuggingFaceEmbedder is instantiated."""
+        """provider='huggingface' → HuggingFaceEmbedder is instantiated, Together is not."""
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
              patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
-            mock_hf_config = MagicMock()
-            mock_hf_config.api_key = "test-token"
-
             mock_settings = MagicMock()
-            mock_settings.hugging_face = mock_hf_config
+            mock_settings.hugging_face = MagicMock(api_key="test-token")
             mock_settings_cls.return_value = mock_settings
 
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
-            mock_emb = AsyncMock()
-            mock_hf_cls.return_value = mock_emb
+            mock_business_cls.from_yaml.return_value = _make_business("huggingface")
+            mock_store_cls.return_value = AsyncMock()
+            mock_hf_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app
             with TestClient(app):
@@ -149,22 +142,22 @@ class TestLifespanProviderDispatch:
             assert not mock_together_cls.called
 
     @pytest.mark.unit
-    def test_lifespan_together_not_used_when_hf_present(self):
-        """Contract: hugging_face present → TogetherAIEmbedder is never instantiated."""
+    def test_lifespan_together_not_used_when_hf_provider(self):
+        """provider='huggingface' → TogetherAIEmbedder is never instantiated."""
         sys.modules.pop("knowledge_garden.main", None)
 
         with patch("knowledge_garden.main.AppSettings") as mock_settings_cls, \
+             patch("knowledge_garden.main.BusinessConfig") as mock_business_cls, \
              patch("knowledge_garden.main.Neo4jGraphStore") as mock_store_cls, \
              patch("knowledge_garden.main.TogetherAIEmbedder") as mock_together_cls, \
              patch("knowledge_garden.main.HuggingFaceEmbedder") as mock_hf_cls:
 
             mock_settings = MagicMock()
-            mock_settings.hugging_face = MagicMock()
+            mock_settings.hugging_face = MagicMock(api_key="test-token")
             mock_settings_cls.return_value = mock_settings
 
-            mock_store = AsyncMock()
-            mock_store_cls.return_value = mock_store
-
+            mock_business_cls.from_yaml.return_value = _make_business("huggingface")
+            mock_store_cls.return_value = AsyncMock()
             mock_hf_cls.return_value = AsyncMock()
 
             from knowledge_garden.main import app

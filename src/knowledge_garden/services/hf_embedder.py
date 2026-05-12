@@ -23,6 +23,7 @@ class HuggingFaceEmbedder(EmbeddingService):
     def __init__(self, hf_config: HuggingFaceConfig, embedding_config: EmbeddingConfig) -> None:
         self._client = AsyncInferenceClient(
             token=hf_config.api_key,
+            provider="hf-inference",
             timeout=120.0,
         )
         self._embedding_config = embedding_config

@@ -33,8 +33,8 @@ llm:
   temperature: 0.3
 
 chunking:
-  max_chunk_size: 512
-  min_chunk_size: 20
+  max_chunk_size: 1024
+  min_chunk_size: 256
 
 linking:
   threshold: 0.9

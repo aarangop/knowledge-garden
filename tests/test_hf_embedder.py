@@ -128,3 +128,16 @@ class TestHuggingFaceEmbedder:
             result = await embedder.embed(["hello"])
 
         assert result == [[0.1] * 384]
+
+    @pytest.mark.unit
+    def test_hf_client_pins_hf_inference_provider(self, hf_config, embedding_config):
+        # Pinning provider="hf-inference" bypasses the SDK's per-model provider
+        # lookup, which raises StopIteration for models with no provider mapping
+        # (e.g. intfloat/multilingual-e5-large-instruct on huggingface_hub 1.12+).
+        with patch(
+            "knowledge_garden.services.hf_embedder.AsyncInferenceClient"
+        ) as mock_client:
+            HuggingFaceEmbedder(hf_config, embedding_config)
+
+        mock_client.assert_called_once()
+        assert mock_client.call_args.kwargs.get("provider") == "hf-inference"
